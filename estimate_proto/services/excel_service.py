@@ -14,17 +14,18 @@ class ExcelService:
     Invoice オブジェクトの一覧をテンプレート Excel に反映し、
     出力ファイルパスを返すサービス。
 
-    今回は「月ごとの kWh（○月値）」だけを B21〜M21 に書き込む。
-    法人名・契約電力は扱わない。
+    - 法人名（UIから入力）を B1 に書き込む
+    - 月ごとの kWh（○月値）を B21〜M21 に書き込む
     """
 
     def __init__(self, cfg: Dict[str, Any]) -> None:
         self.cfg = cfg
         self.project_root: Path = get_project_root()
 
-    def write_invoices(self, invoices: List[Invoice]) -> str:
+    def write_invoices(self, invoices: List[Invoice], corp_name: str = "") -> str:
         """
         template_output.xlsx をベースに:
+          - corp_name があれば B1 に書き込む
           - invoices の各 Invoice から 1〜12月の「○月値」を集めて
             B21〜M21 に書き込む。
 
@@ -35,9 +36,16 @@ class ExcelService:
             return ""
 
         wb = load_workbook(template_path)
-        # シート名は config から取るが、法人名・契約電力はもう使わない
         sheet_name = self.cfg.get("excel_cell_map", {}).get("sheet", wb.sheetnames[0])
         ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
+
+        # ★ 法人名が入力されていれば B1 に書き込む
+        corp_name = (corp_name or "").strip()
+        if corp_name:
+            # 必要なら config.json の "法人名" マッピングを使ってもよい
+            # cell = self.cfg.get("excel_cell_map", {}).get("法人名", "B1")
+            # ws[cell] = corp_name
+            ws["B1"] = corp_name
 
         # --- 月ごとの値をB21〜M21に代入 ---
         month_cells = {
@@ -62,7 +70,7 @@ class ExcelService:
                 if key in fields and month_cells.get(m):
                     ws[month_cells[m]] = fields[key]
 
-        # ★ ここは「template_output.xlsx をそのまま上書き」するようにしてある前提
+        # ★ template_output.xlsx をそのまま上書き
         out_path = self.project_root / "template_output.xlsx"
         wb.save(out_path)
         return str(out_path)

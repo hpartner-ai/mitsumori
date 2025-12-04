@@ -7,37 +7,66 @@ from typing import Dict, Any, Optional
 
 def extract_month(text: str) -> Optional[int]:
     """
-    テキスト中から「○月」を探して、その数字部分を返す。
-    例: '2024年2月分ご請求' → 2
-    （半角 1〜12 月を想定）
+    テキスト全体から「このPDFが何月分か」を推定する。
+
+    優先順位:
+      1. 「○月ご使用分」「○月分」「○月請求分」など
+      2. それが無ければ、単純に最初に出てくる「○月」
     """
-    match = re.search(r"(\d{1,2})月", text)
-    if match:
-        m = int(match.group(1))
-        if 1 <= m <= 12:
-            return m
+    # ① 「○月ご使用分」「○月分」「○月請求分」系を優先
+    for pattern in [
+        r"(\d{1,2})月[^\n]{0,5}ご使用分",
+        r"(\d{1,2})月[^\n]{0,5}ご請求分",
+        r"(\d{1,2})月分",
+    ]:
+        m = re.search(pattern, text)
+        if m:
+            try:
+                month = int(m.group(1))
+                if 1 <= month <= 12:
+                    return month
+            except ValueError:
+                pass
+
+    # ② それでも見つからなければ、単純な「○月」を見る
+    m = re.search(r"(\d{1,2})月", text)
+    if not m:
+        return None
+    try:
+        month = int(m.group(1))
+        if 1 <= month <= 12:
+            return month
+    except ValueError:
+        return None
     return None
 
 
 def extract_kwh_value(text: str) -> str:
     """
-    「12345kWh」「12,345 kWh」など、
-    kWh がついている数値だけを抽出して返す。
-    0kWh の場合は無視する（空文字を返す）。
-    返り値はカンマ除去済みの数字文字列。
+    テキスト全体から「kWh が付いている 0 以外の数値」を探す。
+
+    - 大文字/小文字を区別しない (kWh, KWH など)
+    - カンマ付きもOK
+    - 複数あった場合は「一番大きい値」を採用
     """
-    match = re.search(r"([\d,]+)\s*kWh", text)
-    if not match:
+    matches = re.findall(r"([\d,]+)\s*kWh", text, flags=re.IGNORECASE)
+    values: list[int] = []
+
+    for raw in matches:
+        num_str = raw.replace(",", "")
+        try:
+            v = int(num_str)
+        except ValueError:
+            continue
+        if v == 0:
+            continue
+        values.append(v)
+
+    if not values:
         return ""
 
-    value_str = match.group(1).replace(",", "")
-    try:
-        if int(value_str) == 0:
-            return ""
-    except ValueError:
-        return ""
-
-    return value_str
+    # 一番大きい値を使う（合計使用量っぽいものを想定）
+    return str(max(values))
 
 
 @dataclass
@@ -46,7 +75,11 @@ class Invoice:
     1枚の請求書を表すドメインオブジェクト。
 
     fields:
-      - "1月値"〜"12月値" だけを使う（法人名・契約電力は一旦扱わない）
+      - "1月値"〜"12月値"：
+          「このPDFは何月分か」＋「このPDF内の kWh の値」を
+          月-1シフトした位置に 1 つだけ入れる。
+          例）2月分の請求書で 12345kWh があれば:
+              fields = {"1月値": "12345"}
     raw_text:
       - Azure OCR から取得したテキスト全体
     """
@@ -56,30 +89,15 @@ class Invoice:
 
     @classmethod
     def from_text(cls, text: str, cfg: Dict[str, Any]) -> "Invoice":
-        """
-        OCR済みテキストをもとに Invoice を生成する。
-
-        ロジック：
-        - テキストから「○月」を読む（例: 2月）
-        - テキストから「kWh が付いている 0 以外の数値」を1つ拾う
-        - 読み取った月を -1 シフトしたキーに "○月値" として保存
-          - 1月 → 12月値
-          - 2月 → 1月値
-          - 3月 → 2月値
-          - ...
-        - 法人名 / 契約電力 は今回は扱わない
-        """
         fields: Dict[str, str] = {}
 
-        month = extract_month(text)
-        kwh_value = extract_kwh_value(text)
+        month = extract_month(text)          # このPDFは何月分？
+        kwh_value = extract_kwh_value(text)  # このPDF内のどこかの kWh（最大値）
 
         if month is not None and kwh_value:
-            if month == 1:
-                mapped_month = 12
-            else:
-                mapped_month = month - 1
-
-            fields[f"{mapped_month}月値"] = kwh_value
+            # 1月→12月、2月→1月、… という形で -1 シフト
+            mapped_month = 12 if month == 1 else month - 1
+            key = f"{mapped_month}月値"
+            fields[key] = kwh_value
 
         return cls(fields=fields, raw_text=text)

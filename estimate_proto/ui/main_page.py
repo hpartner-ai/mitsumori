@@ -5,7 +5,6 @@ from pathlib import Path
 
 import streamlit as st
 
-# ★ ここがポイント：相対インポート（先頭に .. がついていること！）
 from ..domain.invoice import Invoice
 from ..services.ocr_service import OcrService
 from ..services.excel_service import ExcelService
@@ -15,6 +14,7 @@ def _init_session_state() -> None:
     defaults = {
         "pdf_files": [],
         "output_file": "",
+        "corp_name": "",  # 法人名
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -24,7 +24,7 @@ def _init_session_state() -> None:
 def render_main_page(cfg: Dict[str, Any]) -> None:
     """
     メイン画面（1ページ構成）。
-    - 左: PDF アップロード
+    - 左: 法人名入力 + PDF アップロード
     - 中: 実行ボタン
     - 右: 結果プレビュー & Excel ダウンロード
     """
@@ -38,9 +38,17 @@ def render_main_page(cfg: Dict[str, Any]) -> None:
     ocr_service = OcrService(cfg)
     excel_service = ExcelService(cfg)
 
-    # ① PDF アップロード
+    # ① 法人名入力 + PDF アップロード
     with left:
-        st.subheader("① PDFをアップロード")
+        st.subheader("① 法人名入力 & PDFをアップロード")
+
+        # ★ 法人名入力欄（テンプレ B1 に反映）
+        st.session_state.corp_name = st.text_input(
+            "法人名（テンプレ B1 セルに反映）",
+            value=st.session_state.get("corp_name", ""),
+            placeholder="例：〇〇株式会社",
+        )
+
         pdf_files = st.file_uploader(
             "PDFをアップロード（複数選択可・一個ずつでもOK）",
             type=["pdf"],
@@ -73,7 +81,11 @@ def render_main_page(cfg: Dict[str, Any]) -> None:
         )
 
         if run_btn and has_files:
-            _run_ocr_and_fill_excel(ocr_service, excel_service)
+            _run_ocr_and_fill_excel(
+                ocr_service,
+                excel_service,
+                corp_name=st.session_state.get("corp_name", "").strip(),
+            )
 
     # ③ 結果プレビュー・ダウンロード
     with right:
@@ -90,6 +102,7 @@ def render_main_page(cfg: Dict[str, Any]) -> None:
 def _run_ocr_and_fill_excel(
     ocr_service: OcrService,
     excel_service: ExcelService,
+    corp_name: str = "",
 ) -> None:
     invoices: List[Invoice] = []
 
@@ -103,14 +116,18 @@ def _run_ocr_and_fill_excel(
                 st.session_state.pdf_files[idx]["text"] = invoice.raw_text or ""
                 invoices.append(invoice)
                 st.success(f"✅ {file_info['name']} の処理が完了しました")
+
+                # 必要ならデバッグ用に表示
+                # st.write(file_info["name"], invoice.fields)
+
             except Exception as e:
                 st.session_state.pdf_files[idx]["status"] = "エラー"
                 st.error(
                     f"❌ {file_info['name']} の処理中にエラーが発生しました: {str(e)}"
                 )
 
-    # まとめて Excel に書き込み
-    excel_path = excel_service.write_invoices(invoices)
+    # まとめて Excel に書き込み（★ 法人名も渡す）
+    excel_path = excel_service.write_invoices(invoices, corp_name=corp_name)
     st.session_state.output_file = excel_path
 
 
@@ -122,7 +139,7 @@ def _render_results_area() -> None:
             st.download_button(
                 label="まとめてExcelダウンロード",
                 data=f.read(),
-                file_name="output_combined.xlsx",
+                file_name="template_output.xlsx",
                 mime=(
                     "application/vnd.openxmlformats-officedocument."
                     "spreadsheetml.sheet"
